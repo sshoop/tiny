@@ -15,6 +15,6 @@
 
 ### 简单的测试
 1. git clone
-2. gcc -o tiny.c csapp.c tiny
+2. gcc -o tiny tiny.c csapp.c -lpthread
 3. ./tiny 2314
 4. 打开浏览器输入 http:localhost:2314/

@@ -47,7 +47,7 @@ typedef struct {
 #define LISTENQ 1024
 
 /* 外部变量*/
-extern  char **environ;
+extern char **environ;
 
 /*声明函数*/
 

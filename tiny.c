@@ -32,8 +32,16 @@ int main(int argc, char **argv)
 	while (1) {
 		clientlen = sizeof(clientaddr);
 		connfd = accept(listenfd, (SA *)&clientaddr, &clientlen);
-		doit(connfd);
-		close(connfd);
+		if(fork() == 0) {
+			//基于进程的并发处理  共享文件表，但不共享地址空间，父子进程独立的地址空间不便于共享信息
+			//父子进程的已连接描述符指向同一文件表表项，父进程不关闭的话，将导致该connfd永远不会关闭，发生内存泄露
+			//
+			close(listenfd); //子进程关闭监听描述符  
+			doit(connfd);
+			close(connfd);	//子进程关闭已连接描述符
+			exit(0);        //退出子进程（重要）
+		}
+		close(connfd);		//父进程关闭已连接描述符
 	}
 	return 0;
 }
@@ -52,6 +60,7 @@ void doit(int fd)
     rio_readinitb(&rio, fd);
     rio_readlineb(&rio, buf, MAXLINE);/*从缓冲区读一行请求*/
     sscanf(buf, "%s %s %s", method, uri, version);
+    //printf("%s %s %s\n", method, uri, version);/*返回原样请求行和报头*/
     if(strcasecmp(method, "GET")) {
         clienterror(fd, method, "501", "Not Implemented", "Tiny does not implement this method");
         return;
@@ -201,7 +210,7 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     if (fork() == 0) {
         setenv("QUERY_STRING", cgiargs, 1);
         dup2(fd, STDOUT_FILENO);/*将标准文件输出流重新定向到客户端*/
-        /*execve(filename, emptylist, environ);运行CGI程序*/
+        //execve(filename, emptylist, environ);/*运行CGI程序*/
     }
     wait(NULL);/*父进程阻塞等待子进程终止*/
 }

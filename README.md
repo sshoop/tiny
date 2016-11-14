@@ -10,9 +10,10 @@
 - 支持GET请求
 - 支持CGI
 - 并发处理请求
+- 支持POST请求
 
 ### 待完善
-- 支持POST请求
+- 实现负载均衡（缓冲区）
 
 ## 代码剖析
 [c语言实现一个小而全的服务器](http://www.sshoop.top/blog/article/23)

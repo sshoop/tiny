@@ -6,14 +6,14 @@
  */
 
 void doit(int fd);
-void read_requesthdrs(rio_t *rp);
+void read_requesthdrs(rio_t *rp, int *length, int is_post);
 int parse_uri(char *uri, char *filename, char *cgiargs);
 void serve_static(int fd, char *filename, int filesize);
 void get_filetype(char *filename, char *filetype);
 void serve_dynamic(int fd, char *filename, char *cgiargs);
 void clienterror(int fd, char *cause, char *errnum,
 		 char *shortmsg, char *longmsg);
-
+void post_dynamic(int fd, char *filename, int contentLength, rio_t *rio);
 
 int main(int argc, char **argv)
 {
@@ -51,7 +51,7 @@ int main(int argc, char **argv)
 */
 void doit(int fd)
 {
-    int is_static;
+    int is_static, head = 0, post = 0, get = 0, contentLength = 0;
     struct stat sbuf;/*文件结构体*/
     char buf[MAXLINE], method[MAXLINE], uri[MAXLINE], version[MAXLINE];
     char filename[MAXLINE], cgiargs[MAXLINE];
@@ -61,13 +61,23 @@ void doit(int fd)
     rio_readlineb(&rio, buf, MAXLINE);/*从缓冲区读一行请求*/
     sscanf(buf, "%s %s %s", method, uri, version);
     //printf("%s %s %s\n", method, uri, version);/*返回原样请求行和报头*/
-    if(strcasecmp(method, "GET")) {
+	
+	/*判断请求方式*/
+	if(!strcasecmp(method, "HEAD")) {
+		head = 1;
+	}else if (!strcasecmp(method, "POST")) {
+		post = 1;
+	}else if(!strcasecmp(method, "GET")){
+		get = 1;
+	}else {
         clienterror(fd, method, "501", "Not Implemented", "Tiny does not implement this method");
         return;
     }
-    read_requesthdrs(&rio);/*读取并忽略任何
-    请求报头*/
-    /*解析URI*/
+
+    //read_requesthdrs(&rio);/*get请求时：读取并忽略请求报头*/ 
+	read_requesthdrs(&rio, &contentLength, post);
+
+	/*解析URI*/
     is_static = parse_uri(uri, filename, cgiargs);
     if (stat(filename, &sbuf) < 0) {/*未找到文件*/
         clienterror(fd, filename, "404", "Not Found", "Tiny couldn't find this file");
@@ -86,6 +96,9 @@ void doit(int fd)
             clienterror(fd, filename, "403", "Forbidden", "Tiny couldn't run the CGI program");
             return;
         }
+		if(post) {
+			post_dynamic(fd, filename, contentLength, &rio);
+		}
         serve_dynamic(fd, filename, cgiargs);
     }
 }
@@ -117,13 +130,21 @@ void clienterror(int fd, char *cause, char *errnum, char *shortmsg, char *longms
 /*
     读取并忽略请求报头
 */
-void read_requesthdrs(rio_t *rp)
+void read_requesthdrs(rio_t *rp, int *length, int is_post)
 {
     char buf[MAXLINE];
+	char *c;
 
     rio_readlineb(rp, buf, MAXLINE);
     while (strcmp(buf, "\r\n")) {
         rio_readlineb(rp, buf, MAXLINE);
+		if(is_post) {/*判断是否为post请求*/
+			if(strcasecmp(buf, "Content-Length:") == 0) {/*获得Content-Length的值*/
+				c = &buf[15];
+				c +=  strspn(c, " \t");
+				*length = atol(c);
+			}
+		}
         printf("%s", buf);
     }
     return;
@@ -210,9 +231,60 @@ void serve_dynamic(int fd, char *filename, char *cgiargs)
     if (fork() == 0) {
         setenv("QUERY_STRING", cgiargs, 1);
         dup2(fd, STDOUT_FILENO);/*将标准文件输出流重新定向到客户端*/
-        //execve(filename, emptylist, environ);/*运行CGI程序*/
+        execve(filename, emptylist, environ);/*运行CGI程序*/
     }
     wait(NULL);/*父进程阻塞等待子进程终止*/
+}
+
+/*
+ * 处理post请求
+ * post请求的参数保存在请求主体中，不能直接从套接字流中读取，因为所有的数据已经缓冲在rio中
+ * 采用管道的形式，将缓冲区的数据写入到管道写端，标准输入流重定向到管道读端-读出数据
+ */
+
+void post_dynamic(int fd, char *filename, int contentLength, rio_t *rp)
+{
+	char buf[MAXLINE], data[MAXLINE], length[32], *emptylist[] = {NULL};
+	int pipe_fd[2];
+
+	sprintf(length, "%d", contentLength);
+	memset(data, 0, MAXLINE);
+
+
+	/*创建管道*/
+	if(pipe(pipe_fd) < 0) {
+		return;
+	}
+
+	if(fork() == 0) {/*创建子进程*/
+		close(pipe_fd[0]);/*关闭读端*/
+		rio_readnb(rp, data, contentLength);/*从缓冲区读取请求报头*/
+
+		rio_writen(pipe_fd[1], data, contentLength);/*将请求报头写入管道*/
+		exit(0);/*退出该子进程*/
+	}
+	else {
+		/*打印HTTP响应*/
+		sprintf(buf, "HTTP/1.0 200 OK\r\n");
+		sprintf(buf, "%sSever: Tiny Web Sever\r\n", buf);
+		rio_writen(fd, buf, strlen(buf));
+
+		if(fork() == 0) {
+
+			close(pipe_fd[1]);/*关闭写端*/
+			dup2(pipe_fd[0], STDIN_FILENO);/*将标准输入重新定向到管道读端，即数据将从管道中获取*/
+			close(pipe_fd[0]);/*关闭管道读端*/
+			setenv("CONTENT_LENGTH", length, 1);/*设置post环境变量*/
+			dup2(fd, STDOUT_FILENO);/*将标准输出重新定向到客户端*/
+			execve(filename, emptylist, environ);
+
+		}
+		else {
+			close(pipe_fd[0]);
+			close(pipe_fd[1]);
+		}
+	}
+
 }
 
 
